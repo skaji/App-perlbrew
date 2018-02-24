@@ -11,6 +11,11 @@ my $modules = [ split /\s+/, <<MODULES ];
 local/lib.pm
 Capture/Tiny.pm
 CPAN/Perl/Releases.pm
+File/Which.pm
+HTTP/Tiny.pm
+HTTP/Tinyish.pm
+IPC/Run3.pm
+parent.pm
 MODULES
 
 my $packer = App::FatPacker->new;

@@ -22,6 +22,7 @@ BEGIN {
 use File::Glob 'bsd_glob';
 use Getopt::Long ();
 use CPAN::Perl::Releases;
+use HTTP::Tinyish;
 
 sub min(@) {
     my $m = $_[0];
@@ -138,122 +139,6 @@ sub files_are_the_same {
     return 1
 }
 
-{
-    my %commands = (
-        curl => {
-            test     => '--version >/dev/null 2>&1',
-            get      => '--silent --location --fail -o - {url}',
-            download => '--silent --location --fail -o {output} {url}',
-            order    => 1,
-
-            # Exit code is 22 on 404s etc
-            die_on_error => sub { die 'Page not retrieved; HTTP error code 400 or above.' if ( $_[ 0 ] >> 8 == 22 ); },
-        },
-        wget => {
-            test     => '--version >/dev/null 2>&1',
-            get      => '--quiet -O - {url}',
-            download => '--quiet -O {output} {url}',
-            order    => 2,
-
-            # Exit code is not 0 on error
-            die_on_error => sub { die 'Page not retrieved: fetch failed.' if ( $_[ 0 ] ); },
-        },
-        fetch => {
-            test     => '--version >/dev/null 2>&1',
-            get      => '-o - {url}',
-            download => '-o {output} {url}',
-            order    => 3,
-
-            # Exit code is 8 on 404s etc
-            die_on_error => sub { die 'Server issued an error response.' if ( $_[ 0 ] >> 8 == 8 ); },
-        }
-    );
-
-    our $HTTP_USER_AGENT_PROGRAM;
-    sub http_user_agent_program {
-        $HTTP_USER_AGENT_PROGRAM ||= do {
-            my $program;
-
-            for my $p (sort {$commands{$a}{order}<=>$commands{$b}{order}} keys %commands) {
-                my $code = system("$p $commands{$p}->{test}") >> 8;
-                if ($code != 127) {
-                    $program = $p;
-                    last;
-                }
-            }
-
-            unless($program) {
-                die "[ERROR] Cannot find a proper http user agent program. Please install curl or wget.\n";
-            }
-
-            $program;
-        };
-
-        die "[ERROR] Unrecognized http user agent program: $HTTP_USER_AGENT_PROGRAM. It can only be one of: ".join(",", keys %commands)."\n" unless $commands{$HTTP_USER_AGENT_PROGRAM};
-
-        return $HTTP_USER_AGENT_PROGRAM;
-    }
-
-    sub http_user_agent_command {
-        my ($purpose, $params) = @_;
-        my $ua = http_user_agent_program;
-        my $cmd = $ua . " " . $commands{ $ua }->{ $purpose };
-        for (keys %$params) {
-            $cmd =~ s!{$_}!$params->{$_}!g;
-        }
-        return ($ua, $cmd) if wantarray;
-        return $cmd;
-    }
-
-    sub http_download {
-        my ($url, $path) = @_;
-
-        if (-e $path) {
-            die "ERROR: The download target < $path > already exists.\n";
-        }
-
-        my $partial = 0;
-        local $SIG{TERM} = local $SIG{INT} = sub { $partial++ };
-
-        my $download_command = http_user_agent_command( download => { url => $url, output => $path } );
-
-        my $status = system($download_command);
-        if ($partial) {
-            unlink($path) if -f $path;
-            return "ERROR: Interrupted.";
-        }
-        unless ($status == 0) {
-            unlink($path) if -f $path;
-            return "ERROR: Failed to execute the command\n\n\t$download_command\n\nReason:\n\n\t$?";
-        }
-        return 0;
-    }
-
-    sub http_get {
-        my ($url, $header, $cb) = @_;
-
-        if (ref($header) eq 'CODE') {
-            $cb = $header;
-            $header = undef;
-        }
-
-        my ($program, $command) = http_user_agent_command( get => { url =>  $url } );
-
-        open my $fh, '-|', $command
-            or die "open() pipe for '$command': $!";
-
-        local $/;
-        my $body = <$fh>;
-        close $fh;
-
-
-        # check if the download has failed and die automatically
-        $commands{ $program }{ die_on_error }->( $? );
-
-        return $cb ? $cb->($body) : $body;
-    }
-}
-
 sub perl_version_to_integer {
     my $version = shift;
     my @v = split(/[\.\-_]/, $version);
@@ -313,6 +198,7 @@ sub new {
         append => '',
         reverse => 0,
         verbose => 0,
+        http => HTTP::Tinyish->new(agent => "$class/$VERSION"),
     );
 
     $opt{$_} = '' for keys %flavor;
@@ -840,10 +726,12 @@ sub available_perls_with_urls {
 
     my $url = $self->{all}  ? "http://www.cpan.org/src/5.0/"
                             : "http://www.cpan.org/src/README.html" ;
-    my $html = http_get( $url, undef, undef );
-    unless($html) {
+
+    my $res = $self->{http}->get($url);
+    unless($res->{success}) {
         die "\nERROR: Unable to retrieve the list of perls.\n\n";
     }
+    my $html = $res->{content};
     for ( split "\n", $html ) {
         my ( $current_perl, $current_url );
         if ( $self->{all} ) {
@@ -864,8 +752,10 @@ sub available_perls_with_urls {
     my $cperl_remote        = 'https://github.com';
     my $url_cperl_release_list  = $cperl_remote . '/perl11/cperl/tags';
 
-    $html = http_get( $url_cperl_release_list );
-    if ($html) {
+    $res = $self->{http}->get($url_cperl_release_list);
+
+    if ($res->{success}) {
+        $html = $res->{content};
         while ( $html =~ m{href="(/perl11/cperl/archive/cperl-(5.+?)\.tar\.gz)"}xg ) {
             $perls->{ "cperl-$2" } = $cperl_remote . $1;
         }
@@ -896,8 +786,9 @@ sub perl_release {
     }
 
     # try src/5.0 symlinks, either perl-5.X or perl5.X; favor .tar.bz2 over .tar.gz
-    my $index = http_get("http://www.cpan.org/src/5.0/");
-    if ($index) {
+    my $res = $self->{http}->get("http://www.cpan.org/src/5.0/");
+    if ($res->{success}) {
+        my $index = $res->{content};
         for my $prefix ( "perl-", "perl" ){
             for my $suffix ( ".tar.bz2", ".tar.gz" ) {
                 my $dist_tarball = "$prefix$version$suffix";
@@ -908,11 +799,14 @@ sub perl_release {
         }
     }
 
-    my $html = http_get("http://search.cpan.org/dist/perl-${version}", { 'Cookie' => "cpan=$mirror" });
+    $res = $self->{http}->get("http://search.cpan.org/dist/perl-${version}", {
+        headers => { 'Cookie' => "cpan=$mirror" },
+    });
 
-    unless ($html) {
+    unless ($res->{success}) {
         die "ERROR: Failed to locate perl-${version} tarball.";
     }
+    my $html = $res->{content};
 
     my ($dist_path, $dist_tarball) =
         $html =~ m[<a href="(/CPAN/authors/id/.+/(perl-${version}.tar.(gz|bz2)))">Download</a>];
@@ -967,8 +861,9 @@ sub release_detail_perl_remote {
     my $version = $rd->{version};
 
     # try src/5.0 symlinks, either perl-5.X or perl5.X; favor .tar.bz2 over .tar.gz
-    my $index = http_get("http://www.cpan.org/src/5.0/");
-    if ($index) {
+    my $res = $self->{http}->get("http://www.cpan.org/src/5.0/");
+    if ($res->{success}) {
+        my $index = $res->{content};
         for my $prefix ( "perl-", "perl" ){
             for my $suffix ( ".tar.bz2", ".tar.gz" ) {
                 my $dist_tarball = "$prefix$version$suffix";
@@ -983,12 +878,15 @@ sub release_detail_perl_remote {
         }
     }
 
-    my $html = http_get("http://search.cpan.org/dist/perl-${version}", { 'Cookie' => "cpan=$mirror" });
+    $res = $self->{http}->get("http://search.cpan.org/dist/perl-${version}", {
+        headers => { 'Cookie' => "cpan=$mirror" },
+    });
 
-    unless ($html) {
+    unless ($res->{success}) {
         die "ERROR: Failed to locate perl-${version} tarball.";
     }
 
+    my $html = $res->{content};
     my ($dist_path, $dist_tarball) =
         $html =~ m[<a href="(/CPAN/authors/id/.+/(perl-${version}.tar.(gz|bz2)))">Download</a>];
     die "ERROR: Cannot find the tarball for perl-$version\n"
@@ -1030,7 +928,11 @@ sub release_detail_cperl_remote {
     $rd ||= {};
     my $expect_href = "/perl11/cperl/archive/${dist}.tar.gz";
     my $expect_url = "https://github.com/perl11/cperl/archive/${dist}.tar.gz";
-    my $html = http_get('https://github.com/perl11/cperl/tags');
+    my $res = $self->{http}->get('https://github.com/perl11/cperl/tags');
+    unless ($res->{success}) {
+        return (1, undef);
+    }
+    my $html = $res->{content};
     my $error = 1;
     my $pages = 0;
     while ($error && $pages++ < 25) {
@@ -1040,7 +942,12 @@ sub release_detail_cperl_remote {
             $error = 0;
         } else {
             if ($html =~ m{ <a \s+ href="(https://github.com/perl11/cperl/tags\?after=[^"]+?)" }xsi) {
-                $html = http_get($1);
+                $res = $self->{http}->get($1);
+                if ($res->{success}) {
+                    $html = $res->{content};
+                } else {
+                    last;
+                }
             } else {
                 last;
             }
@@ -1261,8 +1168,8 @@ sub do_install_url {
     }
     else {
         print "Fetching $dist as $dist_tarball_path\n";
-        my $error = http_download($dist_tarball_url, $dist_tarball_path);
-        die "ERROR: Failed to download $dist_tarball_url\n" if $error;
+        my $res = $self->{http}->mirror($dist_tarball_url, $dist_tarball_path);
+        die "ERROR: Failed to download $dist_tarball_url\n" unless $res->{success};
     }
 
     my $dist_extracted_path = $self->do_extract_tarball($dist_tarball_path);
@@ -1343,9 +1250,8 @@ sub do_install_blead {
     my $dist_tarball_path = joinpath($self->root, "dists", $dist_tarball);
     print "Fetching $dist_git_describe as $dist_tarball_path\n";
 
-    my $error = http_download("http://perl5.git.perl.org/perl.git/snapshot/$dist_tarball", $dist_tarball_path);
-
-    if ($error) {
+    my $res = $self->{http}->mirror("http://perl5.git.perl.org/perl.git/snapshot/$dist_tarball", $dist_tarball_path);
+    unless ($res->{success}) {
         die "\nERROR: Failed to download perl-blead tarball.\n\n";
     }
 
@@ -1592,8 +1498,8 @@ sub run_command_download {
     }
     else {
         print "Download $dist_tarball_url to $dist_tarball_path\n" unless $self->{quiet};
-        my $error = http_download($dist_tarball_url, $dist_tarball_path);
-        if ($error) {
+        my $res = $self->{http}->mirror($dist_tarball_url, $dist_tarball_path);
+        unless ($res->{success}) {
             die "ERROR: Failed to download $dist_tarball_url\n";
         }
     }
@@ -1850,7 +1756,11 @@ sub do_install_program_from_url {
         }
     }
 
-    my $body = http_get($url) or die "\nERROR: Failed to retrieve $program_name executable.\n\n";
+    my $res = $self->{http}->get($url);
+    unless ($res->{success}) {
+        die "\nERROR: Failed to retrieve $program_name executable.\n\n";
+    }
+    my $body = $res->{content};
 
     unless ($body =~ m{\A#!/}s) {
         my $x = joinpath($self->env('TMPDIR') || "/tmp", "${program_name}.downloaded.$$");
@@ -2311,13 +2221,10 @@ sub run_command_self_upgrade {
         die "Your perlbrew installation appears to be system-wide.  Please upgrade through your package manager.\n";
     }
 
-    http_get('https://raw.githubusercontent.com/gugod/App-perlbrew/master/perlbrew', undef, sub {
-        my ( $body ) = @_;
-
-        open my $fh, '>', $TMP_PERLBREW or die "Unable to write perlbrew: $!";
-        print $fh $body;
-        close $fh;
-    });
+    my $res = $self->{http}->mirror('https://raw.githubusercontent.com/gugod/App-perlbrew/master/perlbrew', $TMP_PERLBREW);
+    unless ($res->{success}) {
+        die "Unable to write perlbrew";
+    }
 
     chmod 0755, $TMP_PERLBREW;
     my $new_version = qx($TMP_PERLBREW version);

@@ -12,10 +12,10 @@ $App::perlbrew::PERLBREW_HOME = my $perlbrew_home = tempdir( CLEANUP => 1 );
 
 {
     no warnings 'redefine';
-    sub App::perlbrew::http_get {
-        my ($url) = @_;
+    sub HTTP::Tinyish::get {
+        my ($self, $url) = @_;
         like $url, qr/cpanm$/, "GET cpanm url: $url";
-        return "404 not found.";
+        +{ success => 0 };
     }
 }
 

@@ -30,8 +30,11 @@ describe "App::perlbrew#perl_release method" => sub {
         my $version = "5.14.2";
 
         my $orig_sub = \&CPAN::Perl::Releases::perl_tarballs;
-        *App::perlbrew::http_get = sub {
-            return qq{<a href="/CPAN/authors/id/SOMEONE/perl-${version}.tar.gz">Download</a>};
+        *HTTP::Tinyish::get = sub {
+            +{
+                success => 1,
+                content => qq{<a href="/CPAN/authors/id/SOMEONE/perl-${version}.tar.gz">Download</a>},
+            };
         };
         *CPAN::Perl::Releases::perl_tarballs = sub {};
 

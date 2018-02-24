@@ -7,7 +7,7 @@ use Test::More;
 use Test::Exception;
 
 no warnings 'redefine';
-sub App::perlbrew::http_get { "" }
+sub HTTP::Tinyish::get { +{ success => 0 } }
 
 throws_ok(
     sub {

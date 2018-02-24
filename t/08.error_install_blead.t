@@ -14,7 +14,7 @@ use Path::Class;
 use App::perlbrew;
 {
     no warnings 'redefine';
-    sub App::perlbrew::http_download { return "ERROR" }
+    sub HTTP::Tinyish::mirror { +{ success => 0 } }
 }
 
 throws_ok(

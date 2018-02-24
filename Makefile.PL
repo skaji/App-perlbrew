@@ -19,7 +19,8 @@ requires
     'Pod::Parser'          => '1.63',
     'Pod::Usage'           => '1.68',
     'File::Temp'           => '0.2304',
-    'local::lib'           => '2.000014';
+    'local::lib'           => '2.000014',
+    'HTTP::Tinyish'        => '0.12';
 
 test_requires
     'ExtUtils::MakeMaker'  => '6.86',

@@ -9,11 +9,15 @@ use App::perlbrew;
 
     my $html;
 
-    sub App::perlbrew::http_get {
-        return $html if $html;
-
-        local $/ = undef;
-        $html = <DATA>;
+    sub HTTP::Tinyish::get {
+        $html ||= do {
+            local $/ = undef;
+            $html = <DATA>;
+        };
+        +{
+            success => 1,
+            content => $html,
+        };
     }
 }
 

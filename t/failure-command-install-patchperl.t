@@ -12,10 +12,13 @@ $App::perlbrew::PERLBREW_HOME = my $perlbrew_home = tempdir( CLEANUP => 1 );
 
 {
     no warnings 'redefine';
-    sub App::perlbrew::http_get {
-        my ($url) = @_;
+    sub HTTP::Tinyish::get {
+        my ($self, $url) = @_;
         like $url, qr/patchperl$/, "GET patchperl url: $url";
-        return "Some invalid piece of text";
+        +{
+            success => 1,
+            content => "Some invalid piece of text",
+        };
     }
 }
 

@@ -12,10 +12,13 @@ $App::perlbrew::PERLBREW_HOME = my $perlbrew_home = tempdir( CLEANUP => 1 );
 
 {
     no warnings 'redefine';
-    sub App::perlbrew::http_get {
-        my ($url) = @_;
+    sub HTTP::Tinyish::get {
+        my ($self, $url) = @_;
         like $url, qr/cpanm$/, "GET cpanm url: $url";
-        return "#!/usr/bin/env perl\n# The content of cpanm";
+        +{
+            success => 1,
+            content => "#!/usr/bin/env perl\n# The content of cpanm",
+        };
     }
 }
 
